@@ -1,0 +1,4 @@
+interface:
+  display_name: "云效开发交付"
+  short_description: "按门禁实现、复验、直接合并并交接云效开发任务"
+  default_prompt: "使用 $yunxiao-development-delivery 开始或完成开发；完成时填写实际完成时间，并把关联Codex任务主动时长按分钟汇总后换算为小时。"

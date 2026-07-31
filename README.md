@@ -1,6 +1,6 @@
 # 云效开发交付 Skill
 
-`yunxiao-development-delivery` 用于承接产品需求交棒后的云效开发流程，当前版本为 `7.6.0`。
+`yunxiao-development-delivery` 用于承接产品需求交棒后的云效开发流程，当前版本为 `8.5.0`。
 
 ## 能做什么
 
@@ -24,6 +24,18 @@ npx skills add luffyhe/yunxiao-development-delivery-skill --skill yunxiao-develo
 
 ```bash
 npx skills add luffyhe/yunxiao-development-delivery-skill --skill yunxiao-development-delivery -a cursor -g -y
+```
+
+Codex 与 Cursor 使用同一业务规则源，并分别生成离线包：
+
+- `packages/codex/yunxiao-development-delivery.zip`：包含 Codex UI 元数据。
+- `packages/cursor/yunxiao-development-delivery.zip`：不携带 Codex 专用 UI 元数据。
+- 两个包的 SHA-256 分别记录在对应目录的 `manifest.json`。
+
+重新构建双版本包：
+
+```powershell
+pwsh -File ./tools/build-dual-client-packages.ps1
 ```
 
 ### 同时安装到所有已识别的 Agent

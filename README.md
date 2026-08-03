@@ -1,11 +1,11 @@
 # 云效开发交付 Skill
 
-`yunxiao-development-delivery` 用于承接产品需求交棒后的云效开发流程，当前版本为 `9.0.0`。
+`yunxiao-development-delivery` 用于承接产品需求交棒后的云效开发流程，当前版本为 `9.1.0`。
 
 ## 能做什么
 
 - 所有云效 Projex、Codeup、Flow、AppStack 读写均通过官方`aliyun devops` CLI，不使用视觉或浏览器回退
-- 通过带哈希预检/执行回执，根据【交付】任务创建并分配【开发】子任务
+- 通过带哈希预检/执行回执，根据【交付】任务创建并分配【开发】子任务，新建时继承并回读优先级
 - 将交付任务推进到“已分配”，衔接“开始开发”
 - 创建或复用需求开发分支
 - 执行单个开发任务或批量实现本人负责的开发任务
@@ -56,6 +56,8 @@ npx skills update yunxiao-development-delivery -g -y
 ## 常用命令
 
 ### 分配任务
+
+新建`【开发】`任务时自动复制来源`【交付】`任务的优先级并回读校验；复用已有开发任务时保留原优先级。
 
 ```text
 /skill yunxiao-development-delivery

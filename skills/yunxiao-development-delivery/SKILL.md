@@ -5,7 +5,7 @@ description: "Manage Yunxiao development after a YunxiaoPM handoff entirely thro
 
 # Yunxiao Development Delivery
 
-Operate development tasks and Codeup assets without using code activity as a substitute for real work state. Suite version: `9.0.0`.
+Operate development tasks and Codeup assets without using code activity as a substitute for real work state. Suite version: `9.1.0`.
 
 ## Load the required references
 
@@ -33,7 +33,7 @@ The safeguards in this Skill are self-contained. If `git-submit-safety` is also 
 Own these outcomes:
 
 1. Accept a verified YunxiaoPM handoff whose requirement is already `待开发`.
-2. Allocate one or more `【开发】` child tasks with developer, planned dates, and estimated hours, then move the source `【交付】` task from `待处理` to `已分配`.
+2. Allocate one or more `【开发】` child tasks with developer, planned dates, and estimated hours; every newly created child copies the source `【交付】` priority exactly and verifies it by ID, then move the source `【交付】` task from `待处理` to `已分配`.
 3. Record the developer's real start and move the development child, source `【交付】` task, and requirement into development.
 4. Create branches, commits, and merge requests, and attempt requirement/development-task association without making association success a gate.
 5. In `完成开发`, run an independent developer-side completion validation, submit and merge all relevant MRs without waiting for review, CI, or discussion state, then write the development task's actual completion time and Codex-derived actual development hours before marking it complete.
@@ -89,7 +89,7 @@ All Yunxiao Projex, Codeup, Flow, and AppStack discovery, state reads, relation 
 1. For development-task commands, resolve the exact project, requirement, numbered `【交付】` task, development task, repository, and real integration branch. For Bug commands, resolve the exact Bug and project first; Bug relations and repository fields are optional inputs.
 2. Re-read the live requirement and `【交付】` task using the explicit YunxiaoPM identifiers. Accept only the contract in `references/yunxiaopm-handoff.md`; never search or deduplicate by title. For `分配任务`, perform these reads only through `yunxiao_cli_allocate_task.py` and official `aliyun devops` CLI.
 3. For `分配任务`, first run `skill-run yunxiao_cli_allocate_task.py doctor`, then translate the user parameters to `preflight --task ... --owner ... --plan-start ... --plan-finish ... [--estimated-hours ...] [--development-task ...]`. Interpret `任务=<ID>` as the source `【交付】` task. Validate planned start ≤ planned finish and positive optional hours. Reuse may preserve the existing owner when the name is not unique; creation must block when the owner cannot resolve because the official CLI requires `assignedTo`.
-4. Only after the hashed read-only preflight passes, run `skill-run yunxiao_cli_allocate_task.py apply --preflight <回执>`. The adapter must re-preflight and reject drift, create/reuse `【开发】<需求标题>`, set developer/dates/hours while keeping `待处理`, create/read `PARENT→【交付】` and `ASSOCIATED→需求`, and aggregate-read every field and the managed next-stage command. Only then may it move the source `【交付】` from `待处理 → 已分配`; `已分配|处理中` remains idempotent and `已完成` blocks. Never use browser/DOM/Cookie fallback.
+4. Only after the hashed read-only preflight passes, run `skill-run yunxiao_cli_allocate_task.py apply --preflight <回执>`. The adapter must re-preflight and reject drift, create/reuse `【开发】<需求标题>`, copy the source delivery priority when creating, set developer/dates/hours while keeping `待处理`, create/read `PARENT→【交付】` and `ASSOCIATED→需求`, and aggregate-read every field including priority plus the managed next-stage command. Reused development tasks keep their existing priority. Only then may it move the source `【交付】` from `待处理 → 已分配`; `已分配|处理中` remains idempotent and `已完成` blocks. Never use browser/DOM/Cookie fallback.
 5. Upsert a managed `## 下一阶段` block in the development task description without overwriting business content. Its executable content is exactly `/skill yunxiao-development-delivery` followed by `/go 开发任务:任务=<开发任务编号>`; never append type, repository, scope, or baseline parameters. Mention the optional suffix `输出执行方案` as explanatory text outside the executable block only when useful. Trust only the CLI apply receipt and final CLI read-back.
 6. Do not require repository information at allocation or from the active conversation. During `开发任务`, analyze the requirement, affected page/interface/data, project configuration, existing code relations, accessible Codeup repositories, and current workspace to determine the applicable frontend/backend project automatically. Missing conversation-supplied repository addresses never block the node; stop only when the evidence itself remains contradictory after discovery and the modification target cannot be made safe.
 7. For initial development intake, require the requirement to be `待开发` and the source delivery task to be `已分配`. For a later sibling task, accept requirement=`开发中` and delivery=`处理中` only when the same delivery tree contains verified development-start evidence; for resuming this task, also require its immutable first-start record and formally associated branch. Never change `已确认`/`设计完成` to `待开发` here.

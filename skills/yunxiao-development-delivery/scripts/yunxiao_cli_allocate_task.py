@@ -206,11 +206,22 @@ def field_value(item: dict[str, Any], field_id: str) -> str | None:
     return None
 
 
+def field_display_value(item: dict[str, Any], field_id: str) -> str | None:
+    for row in item.get("customFieldValues") or []:
+        if isinstance(row, dict) and str(row.get("fieldId")) == field_id:
+            values = row.get("values") or []
+            if values and isinstance(values[0], dict):
+                return str(values[0].get("displayValue") or "") or None
+    return None
+
+
 def snapshot_item(item: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": str(item.get("id") or ""), "serialNumber": item_serial(item),
         "subject": item.get("subject"), "status": item_status(item),
         "ownerId": item_user_id(item), "parentId": item.get("parentId"),
+        "priorityId": field_value(item, "priority"),
+        "priorityName": field_display_value(item, "priority"),
         "logicalStatus": item.get("logicalStatus"), "gmtModified": item.get("gmtModified"),
     }
 
@@ -257,7 +268,6 @@ def build_preflight(executable: str, args: argparse.Namespace) -> dict[str, Any]
         raise core.AdapterError("来源【交付】已完成，禁止重开生命周期。")
     if delivery_status not in {"待处理", "已分配", "处理中"}:
         raise core.AdapterError(f"来源【交付】状态{delivery_status}不允许分配。")
-
     associated_ids = relation_ids(executable, str(delivery["id"]), "ASSOCIATED")
     associated = [get_workitem(executable, value) for value in associated_ids]
     requirements = [row for row in associated if row.get("categoryId") == "Req"
@@ -285,6 +295,8 @@ def build_preflight(executable: str, args: argparse.Namespace) -> dict[str, Any]
         action = "reuse"
     else:
         raise core.AdapterError("交付下存在多条【开发】任务，请显式提供--development-task。")
+    if action == "create" and not field_value(delivery, "priority"):
+        raise core.AdapterError("来源【交付】缺少可复制的优先级，停止创建开发任务。")
     if development and item_status(development) != "待处理":
         raise core.AdapterError("复用开发任务必须保持待处理，禁止状态回退。")
 
@@ -429,6 +441,7 @@ def create_development(executable: str, scope: dict[str, Any],
     title = str(delivery.get("subject") or "")
     subject = title.replace("【交付】", "【开发】", 1)
     custom = {
+        "priority": str(delivery.get("priorityId") or ""),
         scope["fieldIds"]["planStart"]: scope["input"]["planStart"] + " 00:00:00",
         scope["fieldIds"]["planFinish"]: scope["input"]["planFinish"] + " 23:59:59",
     }
@@ -445,11 +458,16 @@ def create_development(executable: str, scope: dict[str, Any],
     sprint_id = scope.get("sprintId")
     if sprint_id:
         cli_args.extend(["--sprint", sprint_id])
+    if not custom["priority"]:
+        raise core.AdapterError("来源【交付】优先级快照为空，拒绝创建开发任务。")
     value = core.unwrap(core.run_devops(executable, cli_args))
     workitem_id = str((value or {}).get("id") if isinstance(value, dict) else "")
     if not workitem_id:
         raise core.AdapterError("创建开发任务后未取得内部ID。")
-    return get_workitem(executable, workitem_id)
+    created = get_workitem(executable, workitem_id)
+    if field_value(created, "priority") != custom["priority"]:
+        raise core.AdapterError("开发任务创建后优先级与来源【交付】不一致。")
+    return created
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
@@ -526,6 +544,7 @@ def cmd_apply(args: argparse.Namespace) -> int:
         "planStart": field_value(development, live["fieldIds"]["planStart"]),
         "planFinish": field_value(development, live["fieldIds"]["planFinish"]),
         "estimatedHours": field_value(development, live["fieldIds"]["estimatedHours"]),
+        "priority": field_value(development, "priority"),
         "description": str(development.get("description") or ""),
         "formatType": str(development.get("formatType") or "MARKDOWN").upper(),
     }
@@ -567,6 +586,7 @@ def cmd_apply(args: argparse.Namespace) -> int:
         "planStart": source["planStart"] + " 00:00:00",
         "planFinish": source["planFinish"] + " 23:59:59",
         "estimatedHours": decimal_field_value(source.get("estimatedHours")),
+        "priority": current_values["priority"],
     }
     actual = {
         "owner": item_user_id(after_development),
@@ -574,6 +594,8 @@ def cmd_apply(args: argparse.Namespace) -> int:
         "planFinish": field_value(after_development, live["fieldIds"]["planFinish"]),
         "estimatedHours": estimated_effort_total(
             list_estimated_efforts(executable, str(development["id"]))),
+        "priority": field_value(after_development, "priority"),
+        "priorityName": field_display_value(after_development, "priority"),
     }
     if actual["owner"] != expected["owner"] or actual["planStart"] != expected["planStart"] \
             or actual["planFinish"] != expected["planFinish"]:
@@ -581,6 +603,8 @@ def cmd_apply(args: argparse.Namespace) -> int:
     if expected["estimatedHours"] is not None and Decimal(
             actual["estimatedHours"]) != Decimal(expected["estimatedHours"]):
         raise core.AdapterError("开发任务预计工时写入后回读不一致。")
+    if actual["priority"] != expected["priority"]:
+        raise core.AdapterError("开发任务优先级写入后回读不一致。")
     if item_status(after_development) != "待处理":
         raise core.AdapterError("开发任务状态回读不是待处理。")
     if live["delivery"]["id"] not in relation_ids(executable, str(development["id"]), "PARENT"):

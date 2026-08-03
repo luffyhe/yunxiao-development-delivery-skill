@@ -148,7 +148,10 @@ class CliAdapterTests(unittest.TestCase):
 
     def test_allocation_defers_hours_until_update(self):
         scope = {
-            "delivery": {"id": "delivery-id", "subject": "【交付】示例"},
+            "delivery": {
+                "id": "delivery-id", "subject": "【交付】示例",
+                "priorityId": "priority-high",
+            },
             "fieldIds": {
                 "planStart": "start-field", "planFinish": "finish-field",
                 "estimatedHours": "hours-field",
@@ -159,12 +162,41 @@ class CliAdapterTests(unittest.TestCase):
             },
             "projectId": "project-id", "workitemTypeId": "type-id", "sprintId": None,
         }
+        created = {
+            "id": "development-id",
+            "customFieldValues": [{
+                "fieldId": "priority",
+                "values": [{"identifier": "priority-high", "displayValue": "高"}],
+            }],
+        }
         with patch.object(core, "run_devops", return_value={"id": "development-id"}) as run, \
-                patch.object(allocation, "get_workitem", return_value={"id": "development-id"}):
+                patch.object(allocation, "get_workitem", return_value=created):
             allocation.create_development("aliyun", scope, "owner-id")
         args = run.call_args.args[1]
         custom = json.loads(args[args.index("--custom-field-values") + 1])
         self.assertNotIn("hours-field", custom)
+        self.assertEqual(custom["priority"], "priority-high")
+
+    def test_allocation_blocks_priority_readback_mismatch(self):
+        scope = {
+            "delivery": {
+                "id": "delivery-id", "subject": "【交付】示例",
+                "priorityId": "priority-high",
+            },
+            "fieldIds": {"planStart": "start-field", "planFinish": "finish-field"},
+            "input": {"planStart": "2026-08-03", "planFinish": "2026-08-07"},
+            "projectId": "project-id", "workitemTypeId": "type-id", "sprintId": None,
+        }
+        created = {
+            "id": "development-id",
+            "customFieldValues": [{
+                "fieldId": "priority", "values": [{"identifier": "priority-low"}],
+            }],
+        }
+        with patch.object(core, "run_devops", return_value={"id": "development-id"}), \
+                patch.object(allocation, "get_workitem", return_value=created), \
+                self.assertRaises(core.AdapterError):
+            allocation.create_development("aliyun", scope, "owner-id")
 
     def test_allocation_creates_and_reads_back_estimated_effort(self):
         records = [

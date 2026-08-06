@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import html
 import hashlib
 import json
 import re
@@ -20,6 +21,13 @@ SCHEMA = "oneos.yunxiao-cli-allocation/v1"
 SERIAL_RE = re.compile(r"^([A-Za-z][A-Za-z0-9_-]*)-(\d+)$")
 MARKDOWN_BLOCK_RE = re.compile(r"(?ms)^## 下一阶段\s*\n.*?(?=^## |\Z)")
 HTML_BLOCK_RE = re.compile(r"(?is)<h2>下一阶段</h2>.*?(?=<h2>|\Z)")
+MARKDOWN_PLAN_RE = re.compile(
+    r"(?ms)^## 技术实施方案\s*\n<!-- ONEOS_DEVELOPMENT_TECHNICAL_PLAN_START(?: sha256=[a-f0-9]{64})? -->.*?<!-- ONEOS_DEVELOPMENT_TECHNICAL_PLAN_END -->\s*"
+)
+HTML_PLAN_RE = re.compile(
+    r"(?is)<h2>技术实施方案</h2><!-- ONEOS_DEVELOPMENT_TECHNICAL_PLAN_START(?: sha256=[a-f0-9]{64})? -->.*?<!-- ONEOS_DEVELOPMENT_TECHNICAL_PLAN_END -->"
+)
+PLAN_SECTIONS = ("实现范围", "处理逻辑", "实施步骤", "验证标准")
 
 
 def canonical_hash(value: dict[str, Any], excluded: set[str] | None = None) -> str:
@@ -178,22 +186,46 @@ def workflow_status_id(executable: str, project_id: str, type_id: str,
     return matches[0]
 
 
+def load_technical_plan(path: str, requirement: dict[str, Any]) -> dict[str, str]:
+    source = Path(path).resolve()
+    if not source.is_file():
+        raise core.AdapterError("技术方案文件不存在。")
+    content = source.read_text(encoding="utf-8").strip()
+    if len(content) < 160:
+        raise core.AdapterError("技术方案内容过短，不能替代可执行方案。")
+    if "/skill " in content or "/go " in content:
+        raise core.AdapterError("技术方案不得包含下一步Skill或执行口令。")
+    missing = [name for name in PLAN_SECTIONS if name not in content]
+    if missing:
+        raise core.AdapterError(f"技术方案缺少必要章节：{'、'.join(missing)}。")
+    requirement_serial = item_serial(requirement)
+    if requirement_serial not in content:
+        raise core.AdapterError("技术方案未绑定关联需求编号，拒绝写入。")
+    return {"path": str(source), "content": content,
+            "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest()}
+
+
+def markdown_as_html(content: str) -> str:
+    return "<pre>" + html.escape(content) + "</pre>"
+
+
 def managed_description(current: str | None, format_type: str | None,
-                        development_serial: str) -> tuple[str, str]:
-    command = f"/go 开发任务:任务={development_serial}"
+                        technical_plan: dict[str, str]) -> tuple[str, str]:
+    marker = technical_plan["sha256"]
     if str(format_type or "").upper() == "RICHTEXT":
-        block = ("<h2>下一阶段</h2><p>/skill yunxiao-development-delivery</p>"
-                 f"<p>{command}</p>")
-        source = current or ""
-        updated = (HTML_BLOCK_RE.sub(block, source, count=1)
-                   if HTML_BLOCK_RE.search(source) else f"{source}{block}")
+        block = ("<h2>技术实施方案</h2>"
+                 f"<!-- ONEOS_DEVELOPMENT_TECHNICAL_PLAN_START sha256={marker} -->"
+                 f"{markdown_as_html(technical_plan['content'])}"
+                 "<!-- ONEOS_DEVELOPMENT_TECHNICAL_PLAN_END -->")
+        source = HTML_PLAN_RE.sub("", HTML_BLOCK_RE.sub("", current or "", count=1), count=1).rstrip()
+        updated = f"{source}{block}" if source else block
         return updated, "RICHTEXT"
-    block = ("## 下一阶段\n/skill yunxiao-development-delivery\n"
-             f"{command}\n")
-    source = current or ""
-    updated = (MARKDOWN_BLOCK_RE.sub(block.rstrip(), source, count=1)
-               if MARKDOWN_BLOCK_RE.search(source)
-               else (f"{source.rstrip()}\n\n{block}" if source.strip() else block))
+    block = ("## 技术实施方案\n"
+             f"<!-- ONEOS_DEVELOPMENT_TECHNICAL_PLAN_START sha256={marker} -->\n"
+             f"{technical_plan['content']}\n"
+             "<!-- ONEOS_DEVELOPMENT_TECHNICAL_PLAN_END -->")
+    source = MARKDOWN_PLAN_RE.sub("", MARKDOWN_BLOCK_RE.sub("", current or "", count=1), count=1).rstrip()
+    updated = f"{source}\n\n{block}" if source else block
     return updated.rstrip(), "MARKDOWN"
 
 
@@ -223,6 +255,7 @@ def snapshot_item(item: dict[str, Any]) -> dict[str, Any]:
         "priorityId": field_value(item, "priority"),
         "priorityName": field_display_value(item, "priority"),
         "logicalStatus": item.get("logicalStatus"), "gmtModified": item.get("gmtModified"),
+        "descriptionHash": hashlib.sha256(str(item.get("description") or "").encode("utf-8")).hexdigest(),
     }
 
 
@@ -275,6 +308,7 @@ def build_preflight(executable: str, args: argparse.Namespace) -> dict[str, Any]
     if len(requirements) != 1 or item_status(requirements[0]) != "待开发":
         raise core.AdapterError("来源【交付】未唯一关联状态为待开发的产品需求。")
     requirement = requirements[0]
+    technical_plan = load_technical_plan(args.technical_plan_file, requirement)
 
     child_ids = relation_ids(executable, str(delivery["id"]), "SUB")
     children = [get_workitem(executable, value) for value in child_ids]
@@ -328,6 +362,7 @@ def build_preflight(executable: str, args: argparse.Namespace) -> dict[str, Any]
         "owner": owner,
         "fieldIds": field_ids,
         "statusIds": status_ids,
+        "technicalPlan": {"path": technical_plan["path"], "sha256": technical_plan["sha256"]},
     }
     return {
         "schema": SCHEMA, "command": "preflight", "createdAt": core.now_utc(),
@@ -335,7 +370,9 @@ def build_preflight(executable: str, args: argparse.Namespace) -> dict[str, Any]
             "task": args.task, "owner": args.owner, "planStart": args.plan_start,
             "planFinish": args.plan_finish, "estimatedHours": estimated_hours,
             "developmentTask": args.development_task, "spaceId": args.space_id,
+            "technicalPlanFile": technical_plan["path"],
         },
+        "technicalPlan": technical_plan,
         "currentUser": core.current_user(executable),
         "action": action, "liveScope": live_scope,
         "scopeFingerprint": canonical_hash(live_scope),
@@ -366,6 +403,7 @@ def args_from_preflight(value: dict[str, Any]) -> argparse.Namespace:
         plan_start=source.get("planStart"), plan_finish=source.get("planFinish"),
         estimated_hours=source.get("estimatedHours"),
         development_task=source.get("developmentTask"), space_id=source.get("spaceId"),
+        technical_plan_file=source.get("technicalPlanFile"),
     )
 
 
@@ -470,6 +508,49 @@ def create_development(executable: str, scope: dict[str, Any],
     return created
 
 
+def build_requirement_analysis(executable: str, task_serial: str,
+                               space_id: str | None) -> dict[str, Any]:
+    project = resolve_project(executable, task_serial, space_id)
+    project_id = str(project["id"])
+    delivery = find_workitem_by_serial(executable, project_id, "Task", task_serial)
+    if not str(delivery.get("subject") or "").startswith("【交付】"):
+        raise core.AdapterError("来源任务标题不是【交付】任务。")
+    associated = [get_workitem(executable, value) for value in
+                  relation_ids(executable, str(delivery["id"]), "ASSOCIATED")]
+    requirements = [row for row in associated if row.get("categoryId") == "Req"
+                    and core.is_normal_workitem(row)]
+    if len(requirements) != 1:
+        raise core.AdapterError("来源【交付】未唯一关联产品需求。")
+    requirement = requirements[0]
+    requirement_description = str(requirement.get("description") or "").strip()
+    if not requirement_description:
+        raise core.AdapterError("关联需求没有详细说明，不能生成技术方案。")
+    return {
+        "schema": SCHEMA, "command": "analyze", "createdAt": core.now_utc(),
+        "project": {"id": project_id, "name": project.get("name")},
+        "delivery": {**snapshot_item(delivery), "description": str(delivery.get("description") or "")},
+        "requirement": {**snapshot_item(requirement), "description": requirement_description},
+        "analysisInstruction": {
+            "requiredSections": list(PLAN_SECTIONS),
+            "mustBindRequirementSerial": item_serial(requirement),
+            "forbidden": ["/skill", "/go", "未验证的具体文件路径", "未验证的接口字段"],
+        },
+    }
+
+
+def cmd_analyze(args: argparse.Namespace) -> int:
+    executable = core.find_aliyun()
+    core.require_auth_env()
+    value = build_requirement_analysis(executable, args.task, args.space_id)
+    path = Path(args.output) if args.output else core.output_dir() / "allocation-requirement-analysis.json"
+    core.write_json(path, value)
+    print(json.dumps({"schema": SCHEMA, "command": "analyze", "ready": True,
+                      "analysisPath": str(path), "project": value["project"],
+                      "delivery": value["delivery"], "requirement": value["requirement"],
+                      "requiredSections": list(PLAN_SECTIONS)}, ensure_ascii=False, indent=2))
+    return 0
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     executable = core.find_aliyun()
     flags = core.require_auth_env()
@@ -496,6 +577,7 @@ def cmd_preflight(args: argparse.Namespace) -> int:
         "requirement": value["liveScope"]["requirement"],
         "development": value["liveScope"]["selectedDevelopment"],
         "owner": value["liveScope"]["owner"],
+        "technicalPlanSha256": value["technicalPlan"]["sha256"],
     }, ensure_ascii=False, indent=2))
     return 0
 
@@ -510,6 +592,9 @@ def cmd_apply(args: argparse.Namespace) -> int:
 
     source = frozen["input"]
     live = frozen["liveScope"]
+    technical_plan = frozen.get("technicalPlan")
+    if not isinstance(technical_plan, dict) or technical_plan.get("sha256") != current.get("technicalPlan", {}).get("sha256"):
+        raise core.AdapterError("技术方案在预检后发生变化，请重新预检。")
     scope = {
         **live, "input": source,
         "workitemTypeId": str((get_workitem(executable, live["delivery"]["id"])
@@ -529,7 +614,7 @@ def cmd_apply(args: argparse.Namespace) -> int:
                            "serialNumber": item_serial(development)})
 
     description, format_type = managed_description(
-        development.get("description"), development.get("formatType"), item_serial(development))
+        development.get("description"), development.get("formatType"), technical_plan)
     update_body: dict[str, Any] = {
         live["fieldIds"]["planStart"]: source["planStart"] + " 00:00:00",
         live["fieldIds"]["planFinish"]: source["planFinish"] + " 23:59:59",
@@ -611,9 +696,8 @@ def cmd_apply(args: argparse.Namespace) -> int:
         raise core.AdapterError("开发任务父交付关系回读失败。")
     if live["requirement"]["id"] not in relation_ids(executable, str(development["id"]), "ASSOCIATED"):
         raise core.AdapterError("开发任务需求关联回读失败。")
-    expected_command = f"/go 开发任务:任务={item_serial(after_development)}"
-    if expected_command not in str(after_development.get("description") or ""):
-        raise core.AdapterError("开发任务下一阶段命令回读失败。")
+    if f"sha256={technical_plan['sha256']}" not in str(after_development.get("description") or ""):
+        raise core.AdapterError("开发任务技术方案回读失败。")
 
     before_delivery_status = item_status(get_workitem(executable, live["delivery"]["id"]))
     if before_delivery_status == "待处理":
@@ -659,6 +743,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     doctor = sub.add_parser("doctor", help="检查CLI、插件和中心版环境变量")
     doctor.set_defaults(func=cmd_doctor)
+    analyze = sub.add_parser("analyze", help="只读读取关联需求详细说明，供生成技术方案")
+    analyze.add_argument("--task", required=True)
+    analyze.add_argument("--space-id")
+    analyze.add_argument("--output")
+    analyze.set_defaults(func=cmd_analyze)
     preflight = sub.add_parser("preflight", help="只读解析交付、需求、开发任务、负责人和字段")
     preflight.add_argument("--task", required=True)
     preflight.add_argument("--owner", required=True)
@@ -667,6 +756,7 @@ def build_parser() -> argparse.ArgumentParser:
     preflight.add_argument("--estimated-hours")
     preflight.add_argument("--development-task")
     preflight.add_argument("--space-id")
+    preflight.add_argument("--technical-plan-file", required=True)
     preflight.add_argument("--output")
     preflight.set_defaults(func=cmd_preflight)
     apply = sub.add_parser("apply", help="仅按未漂移预检回执执行并回读")

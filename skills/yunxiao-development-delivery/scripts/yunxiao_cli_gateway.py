@@ -83,12 +83,15 @@ def write_json(path: Path, value: dict[str, Any]) -> None:
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def validate_args(args: Any) -> list[str]:
+def validate_args(args: Any, operation: str) -> list[str]:
     if not isinstance(args, list) or not all(isinstance(v, str) for v in args):
         raise core.AdapterError("CLI args必须是字符串数组。")
-    for value in args:
-        if "\x00" in value or "\r" in value or "\n" in value:
-            raise core.AdapterError("CLI参数不得包含换行或NUL。")
+    for index, value in enumerate(args):
+        if "\x00" in value:
+            raise core.AdapterError("CLI参数不得包含NUL。")
+        previous = args[index - 1] if index > 0 else ""
+        if ("\r" in value or "\n" in value) and previous != "--description":
+            raise core.AdapterError("CLI参数不得包含换行。")
         if SECRET_RE.search(value):
             raise core.AdapterError("计划/回执不得包含凭据或敏感参数；请使用云效受保护变量。")
     return list(args)
@@ -107,7 +110,7 @@ def validate_call(call: Any, write: bool) -> dict[str, Any]:
             raise core.AdapterError(f"写操作不在白名单：{operation}")
     elif not is_read(operation):
         raise core.AdapterError(f"只读操作不在白名单：{operation}")
-    return {"operation": operation, "args": validate_args(call.get("args", []))}
+    return {"operation": operation, "args": validate_args(call.get("args", []), operation)}
 
 
 def get_path(value: Any, path: str) -> Any:

@@ -150,13 +150,78 @@ def pipeline_sources(pipeline: dict[str, Any]) -> list[dict[str, Any]]:
         data = item.get("data") if isinstance(item, dict) else None
         if not isinstance(data, dict):
             continue
+        raw_events = data.get("events") or []
+        if isinstance(raw_events, str):
+            events = [raw_events]
+        elif isinstance(raw_events, list):
+            events = [str(event) for event in raw_events]
+        else:
+            events = []
         result.append({
             "repo": str(data.get("repo") or ""),
             "label": str(data.get("label") or item.get("label") or ""),
             "branch": str(data.get("branch") or data.get("triggerFilter") or ""),
-            "events": [str(event) for event in data.get("events") or []],
+            "events": events,
         })
     return result
+
+
+def list_all_pipelines(executable: str) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for page in range(1, 101):
+        page_rows = rows(core.run_devops(executable, [
+            "flow-list-pipelines", "--page", str(page), "--per-page", "10",
+        ]), "Flow流水线列表")
+        result.extend(page_rows)
+        if len(page_rows) < 10:
+            break
+    return result
+
+
+def pipeline_covers_groups(pipeline: dict[str, Any],
+                           groups: list[dict[str, Any]]) -> bool:
+    sources = pipeline_sources(pipeline)
+    for group in groups:
+        markers = {str(group.get("httpUrl") or ""),
+                   str(group.get("pathWithNamespace") or "")}
+        target = str(group["targetBranch"])
+        matched = [source for source in sources
+                   if target == source.get("branch")
+                   and any(marker and marker in {source.get("repo"), source.get("label")}
+                           for marker in markers)]
+        if len(matched) != 1:
+            return False
+    return True
+
+
+def resolve_existing_test_pipeline(executable: str,
+                                   groups: list[dict[str, Any]]) -> dict[str, Any]:
+    matches: list[dict[str, Any]] = []
+    for item in list_all_pipelines(executable):
+        pipeline_id = str(item.get("pipelineId") or item.get("id") or "")
+        name = str(item.get("pipelineName") or item.get("name") or "")
+        lowered = name.lower()
+        if (not pipeline_id
+                or not re.search(r"(^|[-_ ])test($|[-_ ])|测试", lowered)
+                or re.search(r"(^|[-_ ])prod(uction)?($|[-_ ])|生产", lowered)):
+            continue
+        value = core.unwrap(core.run_devops(executable, [
+            "flow-get-pipeline", "--pipeline-id", pipeline_id,
+        ]))
+        if (isinstance(value, dict)
+                and str(value.get("id")) == pipeline_id
+                and pipeline_covers_groups(value, groups)):
+            matches.append(value)
+    if not matches:
+        repos = ",".join(sorted({str(group.get("repositoryName") or group["repositoryId"])
+                                 for group in groups}))
+        raise core.AdapterError(
+            f"未找到代码源和目标分支均匹配、名称带test且不带prod的既有流水线：{repos}。"
+            "本Skill禁止创建、复制或修改流水线；请维护仓库对应的test流水线。")
+    if len(matches) != 1:
+        names = ",".join(sorted(str(item.get("name") or item.get("id")) for item in matches))
+        raise core.AdapterError(f"既有test流水线匹配不唯一：{names}")
+    return matches[0]
 
 
 def latest_pipeline_run_id(executable: str, pipeline_id: str) -> str | None:
@@ -177,19 +242,24 @@ def validate_pipeline(executable: str, pipeline_spec: dict[str, Any],
     if not isinstance(params, dict):
         raise core.AdapterError("test流水线params必须是JSON对象。")
     validate_safe_params(params)
-    if (not pipeline_id or not expected_name or environment != "test"
-            or execution_mode not in {"manual-cli", "auto-after-merge"}):
+    if environment not in {"", "test"}:
+        raise core.AdapterError("test流水线environment只能为test或省略。")
+    if execution_mode not in {"", "manual-cli", "auto-after-merge"}:
         raise core.AdapterError(
-            "test流水线计划必须包含pipelineId、expectedName（兼容name）、environment=test，"
-            "并明确executionMode=manual-cli|auto-after-merge。")
-    value = core.unwrap(core.run_devops(executable, [
-        "flow-get-pipeline", "--pipeline-id", pipeline_id,
-    ]))
+            "test流水线executionMode只能为manual-cli、auto-after-merge或省略后自动识别。")
+    if pipeline_id:
+        value = core.unwrap(core.run_devops(executable, [
+            "flow-get-pipeline", "--pipeline-id", pipeline_id,
+        ]))
+    else:
+        value = resolve_existing_test_pipeline(executable, groups)
+        pipeline_id = str(value.get("id") or "")
     if not isinstance(value, dict) or str(value.get("id")) != pipeline_id:
         raise core.AdapterError("Flow流水线ID回读不一致。")
     actual_name = str(value.get("name") or "")
     lowered = actual_name.lower()
-    if actual_name != expected_name or re.search(r"(^|[-_ ])prod(uction)?($|[-_ ])|生产", lowered):
+    if ((expected_name and actual_name != expected_name)
+            or re.search(r"(^|[-_ ])prod(uction)?($|[-_ ])|生产", lowered)):
         raise core.AdapterError(f"流水线不是精确预期的test流水线：{actual_name}")
     if not re.search(r"(^|[-_ ])test($|[-_ ])|测试", lowered):
         raise core.AdapterError(f"流水线名称缺少test环境标识：{actual_name}")
@@ -208,6 +278,15 @@ def validate_pipeline(executable: str, pipeline_spec: dict[str, Any],
         matched_sources.extend(matched)
     relevant_events = sorted({event for source in matched_sources for event in source.get("events", [])
                               if event in {"merge_request/merged", "push"}})
+    if not execution_mode:
+        if not relevant_events:
+            execution_mode = "manual-cli"
+        elif len(relevant_events) == 1:
+            execution_mode = "auto-after-merge"
+        else:
+            raise core.AdapterError(
+                "既有test流水线存在多个相关自动触发事件，无法保证仅发布一次："
+                + ",".join(relevant_events))
     if execution_mode == "manual-cli" and relevant_events:
         raise core.AdapterError(
             "流水线已配置目标分支自动触发，不能再使用manual-cli，否则会重复发布。")
@@ -568,8 +647,10 @@ def cmd_start_test(args: argparse.Namespace) -> int:
                 "flow-get-pipeline-run", "--pipeline-id", str(pipeline["pipelineId"]),
                 "--pipeline-run-id", candidate_id,
             ], timeout=120))
-            actual = collect_commit_ids({"sources": detail.get("sources") if isinstance(detail, dict) else None,
-                                         "globalParams": detail.get("globalParams") if isinstance(detail, dict) else None})
+            # Flow's top-level source can omit commit IDs for merge-request triggers.
+            # The authoritative target revision is then present in the structured
+            # job trigger payload, which is parsed by collect_pipeline_commit_ids.
+            actual = collect_pipeline_commit_ids(detail if isinstance(detail, dict) else {})
             if expected.issubset(actual):
                 matched_run_ids.append(candidate_id)
         if not matched_run_ids:

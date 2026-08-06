@@ -11,7 +11,7 @@
 5. 每次状态写入后回读编号、状态、负责人和验证者。
 6. 查询Codeup代码库、分支和MR；
 7. 创建或复用精确分支，创建或复用MR，合并并回读`mergedRevision`；
-8. 校验唯一test流水线及其代码源、目标分支和触发方式；
+8. 从既有Flow中按精确代码源、目标分支和`test/测试`名称发现唯一test流水线，校验触发方式；
 9. 通过CLI启动一次手动流水线，或附着到合并后唯一自动运行实例；
 10. 查询流水线终态并证明运行实例包含全部合并版本，再生成部署证据。
 
@@ -72,10 +72,7 @@ skill-run yunxiao_cli_bug_batch.py snapshot --space-id <项目ID> [--space-id <�
     }
   ],
   "testPipeline": {
-    "pipelineId": "4754190",
-    "expectedName": "oneos-web-test",
     "environment": "test",
-    "executionMode": "auto-after-merge",
     "params": {}
   }
 }
@@ -92,10 +89,12 @@ skill-run yunxiao_cli_bug_delivery.py preflight --plan <计划JSON>
 - 每个Bug来自同一冻结快照且只属于一个提交组；
 - Codeup数字仓库ID、读写权限、目标分支和提交基线可回读；
 - 已有源分支仅在`reuseExisting=true`且提交一致时复用；
-- 流水线ID与名称精确匹配，名称含`test/测试`且不含`prod/生产`；
+- 未提供流水线ID时，从组织现有流水线中按代码源和目标分支唯一发现；提供ID时只用于缩小范围，仍必须回读验证；
+- 流水线名称含`test/测试`且不含`prod/生产`；
 - 流水线代码源精确覆盖每个仓库和目标分支；
+- 禁止在本节点创建、复制、更新、重命名或删除流水线及服务连接；零匹配或多匹配直接返回配置缺口；
 - `executionMode=manual-cli`时目标分支不得已配置自动触发；
-- `executionMode=auto-after-merge`时只能有一个相关自动触发事件。若同时存在`push`和`merge_request/merged`，因可能重复发布而阻塞。
+- `executionMode=auto-after-merge`时只能有一个相关自动触发事件。未指定模式时由现有触发配置自动判断；若同时存在`push`和`merge_request/merged`，因可能重复发布而阻塞。
 
 预检记录最近一次运行ID作为自动触发基线，输出带哈希的回执。
 

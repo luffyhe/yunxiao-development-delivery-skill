@@ -34,6 +34,7 @@ skill-run yunxiao_cli_allocate_task.py preflight \
   --owner 李振 \
   --plan-start 2026-08-03 \
   --plan-finish 2026-08-05 \
+  --technical-plan-file <方案.md> \
   --estimated-hours 8
 ```
 
@@ -43,7 +44,7 @@ skill-run yunxiao_cli_allocate_task.py preflight \
 --development-task ONEOS-789
 ```
 
-预检必须通过CLI完成并输出带哈希的系统临时目录回执：
+预检前先执行`skill-run yunxiao_cli_allocate_task.py analyze --task ...`读取正式关联需求的完整描述，由Agent按`allocation-technical-plan.md`生成方案文件；预检命令必须增加`--technical-plan-file <方案.md>`。预检必须通过CLI完成并输出带哈希的系统临时目录回执：
 
 1. 根据任务编号前缀唯一解析项目，并按精确编号读取`【交付】`。
 2. 验证交付负责人=何斐、状态属于`待处理|已分配|处理中`且未关闭。
@@ -53,7 +54,7 @@ skill-run yunxiao_cli_allocate_task.py preflight \
 6. 读取并冻结交付任务`priority`的标识ID；缺失时创建路径必须零写入阻塞。
 7. 动态读取任务字段配置，唯一解析计划开始、计划完成和预计工时字段ID。
 8. 动态读取任务工作流，唯一解析`待处理`和`已分配`状态ID。
-9. 校验日期和正数工时，冻结对象、关系、优先级、字段、状态和负责人指纹。
+9. 校验日期和正数工时，校验技术方案绑定关联需求编号且含实现范围、处理逻辑、实施步骤、验证标准；冻结需求描述哈希、方案哈希、对象、关系、优先级、字段、状态和负责人指纹。
 
 CLI创建工作项要求`assignedTo`。因此：复用任务时负责人无法唯一解析可保留原负责人并报告；创建任务时负责人无法唯一解析必须在预检阶段阻塞，不得临时指派其他人。
 
@@ -71,9 +72,9 @@ skill-run yunxiao_cli_allocate_task.py apply --preflight <预检回执路径>
 
 1. 创建或复用唯一`【开发】<需求标题>`；创建时使用`parent-id`直接归入来源交付，并把交付任务`priority`标识ID原样写入开发任务。复用已有开发任务时保留其现有优先级，不做覆盖。
 2. 写负责人、计划开始`00:00:00`、计划完成`23:59:59`并保持任务=`待处理`；可选预计工时必须通过官方CLI的`projex-create-estimated-effort`/`projex-update-estimated-effort`专用接口登记，并用`projex-list-estimated-efforts`按合计值回读，不得把预计工时当作通用自定义字段更新。
-3. 幂等维护描述中的`## 下一阶段`，保留区块外人工内容。
+3. 幂等维护描述中的`## 技术实施方案`，删除旧的本Skill生成的`## 下一阶段`命令块，保留区块外人工内容。
 4. 通过CLI创建或复用`PARENT→交付`和`ASSOCIATED→需求`，逐条回读。
-5. 聚合回读开发任务负责人、优先级、日期、工时、状态、两条关系和下一阶段命令；新建任务的优先级标识ID必须与交付任务完全一致。
+5. 聚合回读开发任务负责人、优先级、日期、工时、状态、两条关系和技术方案哈希；新建任务的优先级标识ID必须与交付任务完全一致。
 6. 全部通过后，交付为`待处理`时更新到`已分配`；已为`已分配|处理中`时幂等保持；需求保持`待开发`。
 7. 输出带哈希执行回执和实际操作清单。
 

@@ -1,6 +1,6 @@
 # 云效开发交付 Skill
 
-`yunxiao-development-delivery` 用于承接产品需求交棒后的云效开发流程，当前版本为 `9.1.0`。
+`yunxiao-development-delivery` 用于承接产品需求交棒后的云效开发流程，当前版本为 `9.3.1`。
 
 ## 能做什么
 

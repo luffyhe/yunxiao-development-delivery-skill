@@ -131,12 +131,19 @@ class CliAdapterTests(unittest.TestCase):
 
     def test_allocation_managed_markdown_is_idempotent(self):
         original = "人工说明\n\n## 下一阶段\n/skill old\n/go old"
-        once, format_type = allocation.managed_description(original, "MARKDOWN", "ONEOS-417")
-        twice, _ = allocation.managed_description(once, format_type, "ONEOS-417")
+        technical_plan = {
+            "content": "## 实现范围\nONEOS-417\n\n## 处理逻辑\n按需求执行。\n\n## 实施步骤\n完成实现。\n\n## 验证标准\n完成验证。",
+            "sha256": "a" * 64,
+        }
+        once, format_type = allocation.managed_description(
+            original, "MARKDOWN", technical_plan
+        )
+        twice, _ = allocation.managed_description(once, format_type, technical_plan)
         self.assertEqual(once, twice)
         self.assertIn("人工说明", once)
-        self.assertEqual(once.count("## 下一阶段"), 1)
-        self.assertIn("/go 开发任务:任务=ONEOS-417", once)
+        self.assertEqual(once.count("## 技术实施方案"), 1)
+        self.assertIn("sha256=" + "a" * 64, once)
+        self.assertIn("ONEOS-417", once)
 
     def test_allocation_rejects_reversed_dates(self):
         with self.assertRaises(core.AdapterError):
